@@ -50,7 +50,6 @@ open class Highlightr
     public init?(highlightPath: String? = nil)
     {
         guard let jsContext = JSContext() else { return nil }
-        let window = JSValue(newObjectIn: jsContext)
 
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
@@ -64,7 +63,7 @@ open class Highlightr
         }
         
         guard let hgJs = try? String.init(contentsOfFile: hgPath) else { return nil }
-        let value = jsContext.evaluateScript(hgJs)
+        _ = jsContext.evaluateScript(hgJs)
         guard let hljs = jsContext.objectForKeyedSubscript("hljs") else { return nil }
 
         self.hljs = hljs
@@ -196,23 +195,31 @@ open class Highlightr
     {
         let scanner = Scanner(string: string)
         scanner.charactersToBeSkipped = nil
-        var scannedString: NSString?
+        let utf16 = scanner.string.utf16
+        var scannedString: String?
         let resultString = NSMutableAttributedString(string: "")
         var propStack = ["hljs"]
+
+        // Moves the scanner on by a number of UTF-16 units, as scanLocation did
+        func advance(_ count: Int)
+        {
+            scanner.currentIndex = utf16.index(scanner.currentIndex, offsetBy: count, limitedBy: utf16.endIndex) ?? utf16.endIndex
+        }
         
         while !scanner.isAtEnd
         {
             var ended = false
-            if scanner.scanUpTo(htmlStart, into: &scannedString)
+            if let scanned = scanner.scanUpToString(htmlStart)
             {
+                scannedString = scanned
                 if scanner.isAtEnd
                 {
                     ended = true
                 }
             }
             
-            if scannedString != nil && scannedString!.length > 0 {
-                let attrScannedString = theme.applyStyleToString(scannedString! as String, styleList: propStack)
+            if let scanned = scannedString, !scanned.isEmpty {
+                let attrScannedString = theme.applyStyleToString(scanned, styleList: propStack)
                 resultString.append(attrScannedString)
                 if ended
                 {
@@ -220,26 +227,32 @@ open class Highlightr
                 }
             }
             
-            scanner.scanLocation += 1
+            advance(htmlStart.utf16.count)
             
-            let string = scanner.string as NSString
-            let nextChar = string.substring(with: NSMakeRange(scanner.scanLocation, 1))
-            if(nextChar == "s")
+            guard scanner.currentIndex < utf16.endIndex else
             {
-                scanner.scanLocation += (spanStart as NSString).length
-                scanner.scanUpTo(spanStartClose, into:&scannedString)
-                scanner.scanLocation += (spanStartClose as NSString).length
-                propStack.append(scannedString! as String)
+                break
             }
-            else if(nextChar == "/")
+            let nextChar = utf16[scanner.currentIndex]
+            if(nextChar == UInt16(UInt8(ascii: "s")))
             {
-                scanner.scanLocation += (spanEnd as NSString).length
+                advance(spanStart.utf16.count)
+                if let scanned = scanner.scanUpToString(spanStartClose)
+                {
+                    scannedString = scanned
+                }
+                advance(spanStartClose.utf16.count)
+                propStack.append(scannedString ?? "")
+            }
+            else if(nextChar == UInt16(UInt8(ascii: "/")))
+            {
+                advance(spanEnd.utf16.count)
                 propStack.removeLast()
             }else
             {
                 let attrScannedString = theme.applyStyleToString("<", styleList: propStack)
                 resultString.append(attrScannedString)
-                scanner.scanLocation += 1
+                advance(1)
             }
             
             scannedString = nil
